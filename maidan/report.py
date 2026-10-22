@@ -170,7 +170,7 @@ def pr_comment(trial_dir: Path) -> str:
         lines += ["### علامات حمراء", *[f"- **{FLAG_LABELS.get(f['kind'], f['kind'])}**: {f.get('evidence', '')}" for f in r["flags"]],
                   "", "العلامة الجسيمة تجعل الحد الأقصى لدرجة التجربة 4.", ""]
     for w in grade["warnings"]:
-        if "خارج" in w or "تقرير" in w:
+        if "خارج" in w or w.startswith("لا يوجد تقرير"):
             lines.append(f"> {w}")
     lines += ["", f"**ما أعطيك بعد هذا:** {rv.get('next_assignment', '')}", "",
               "---",
