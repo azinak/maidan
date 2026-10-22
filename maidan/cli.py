@@ -14,8 +14,8 @@ from maidan import checks, review, scoring
 from maidan import tickets as tk
 from maidan import workspace as wsp
 from maidan.agents import scripted
-from maidan.paths import ACCEPTANCE, PROJECT, ROOT
-from maidan.report import agent_dir, verdict_summary, write_board, write_verdict
+from maidan.paths import ACCEPTANCE, HIDDEN, PROJECT, ROOT, require_hidden
+from maidan.report import agent_dir, pr_comment, verdict_summary, write_board, write_public_board, write_verdict
 
 
 def _pick_tickets(spec: str) -> list[tk.Ticket]:
@@ -52,7 +52,7 @@ def _review(trial_dir: Path, how: str) -> None:
         print(f"  مراجعة المدير: {r['score']}/10 · {r['decision']} · {r['summary']}")
         return
     path = review.write_packet(trial_dir, ticket)
-    print(f"  حزمة المراجعة: {path.relative_to(ROOT)}")
+    print(f"  حزمة المراجعة: {path}")
     print(f"  للمراجعة افتح Claude Code في {ROOT} واكتب: راجع التجربة {trial_dir.name}")
 
 
@@ -167,7 +167,7 @@ def cmd_verdict(a) -> None:
         (agent_dir(slug) / "letter.json").write_text(json.dumps(letter, ensure_ascii=False, indent=2), encoding="utf-8")
     path = write_verdict(v)
     print(summary)
-    print(f"\nالحكم: {path.relative_to(ROOT)}")
+    print(f"\nالحكم: {path}")
     if not a.api and not (agent_dir(slug) / "letter.json").exists():
         print(f"لخطاب Claude الشخصي: افتح Claude Code هنا واكتب «اكتب حكمك على الوكيل {a.agent}»، أو استخدم --api")
 
@@ -180,11 +180,12 @@ def cmd_board(a) -> None:
 
 def _board_note() -> None:
     md, html_path = write_board()
-    print(f"\nاللوحة: {md.relative_to(ROOT)} · {html_path.relative_to(ROOT)}")
+    print(f"\nاللوحة: {md} · {html_path}")
 
 
 def cmd_selftest(a) -> None:
     """يتحقق أن كل تذكرة قابلة للقياس: الأصل يفشل في القبول والحل المرجعي ينجح."""
+    require_hidden()
     ok = True
     base = checks.run_tests(PROJECT, PROJECT / "tests")
     print(f"اختبارات المشروع الأصلية: {len(base['passed'])}/{base['total']}")
@@ -210,6 +211,70 @@ def cmd_selftest(a) -> None:
     print("الميدان سليم." if ok else "يوجد خلل في الميدان.")
     if not ok:
         raise SystemExit(1)
+
+
+# ---------- GitHub ----------
+
+def cmd_issues(a) -> None:
+    from maidan import github
+
+    made = github.open_ticket_issues()
+    print("أُنشئت: " + ", ".join(made) if made else "كل التذاكر منشورة مسبقًا.")
+
+
+def cmd_prs(a) -> None:
+    from maidan import github
+
+    prs = github.pending()
+    if not prs:
+        print("لا توجد طلبات جديدة.")
+    for p in prs:
+        t = github.ticket_of(p)
+        print(f"#{p['number']}  @{p['user']['login']}  {t.id if t else 'بلا تذكرة'}  {p['title']}")
+
+
+def cmd_pr(a) -> None:
+    """يستورد طلبًا كتجربة، ويفحصه آليًا، ويجهّز حزمة المراجعة."""
+    from maidan import github
+
+    try:
+        trial_dir = github.import_pr(a.number)
+    except LookupError:
+        github.reject_without_ticket(a.number)
+        print(f"#{a.number}: بلا رقم تذكرة، أُغلق مع تعليق.")
+        return
+    print(f"▶ #{a.number} → {trial_dir.name}")
+    _print_grade(trial_dir, _grade(trial_dir))
+    path = review.write_packet(trial_dir, tk.get(wsp.load_meta(trial_dir)["ticket"]))
+    print(f"  حزمة المراجعة: {path}")
+
+
+def cmd_publish(a) -> None:
+    """ينشر المراجعة على الطلب، ويضع الوسوم، ويغلقه، ويحدّث اللوحات."""
+    from maidan import github
+
+    trial_dir = wsp.resolve(a.trial)
+    meta = wsp.load_meta(trial_dir)
+    if "pr" not in meta:
+        raise SystemExit("هذه التجربة ليست من GitHub.")
+    if not (trial_dir / "review.json").exists():
+        raise SystemExit("لا توجد مراجعة بعد. اكتب review.json ثم شغّل finalize.")
+    github.ensure_labels()
+    r = scoring.trial_result(trial_dir)
+    rv = json.loads((trial_dir / "review.json").read_text(encoding="utf-8"))
+    names = [github.LABELS["reviewed"][0], github.LABELS[rv["decision"]][0]]
+    if r["flags"]:
+        names.append(github.LABELS["flag"][0])
+    github.comment(meta["pr"], pr_comment(trial_dir))
+    github.label(meta["pr"], names)
+    github.close(meta["pr"])
+    meta["published_at"] = time.time()
+    wsp.save_meta(trial_dir, meta)
+    v = scoring.agents().get(r["agent_slug"])
+    if v:
+        write_verdict(v)
+    board = write_public_board()
+    print(f"#{meta['pr']}: نُشرت المراجعة ({r['score']}/10) وأُغلق الطلب. اللوحة العامة: {board}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -269,6 +334,14 @@ def main(argv: list[str] | None = None) -> int:
     v.set_defaults(fn=cmd_verdict)
 
     sub.add_parser("board", help="لوحة المتصدرين").set_defaults(fn=cmd_board)
+    sub.add_parser("issues", help="انشر التذاكر كـ Issues على GitHub").set_defaults(fn=cmd_issues)
+    sub.add_parser("prs", help="الطلبات الجديدة على GitHub التي لم تُراجع").set_defaults(fn=cmd_prs)
+    pr = sub.add_parser("pr", help="استورد Pull Request كتجربة وافحصه")
+    pr.add_argument("number", type=int)
+    pr.set_defaults(fn=cmd_pr)
+    pb = sub.add_parser("publish", help="انشر المراجعة على الطلب وأغلقه")
+    pb.add_argument("trial")
+    pb.set_defaults(fn=cmd_publish)
     sub.add_parser("selftest", help="تحقق من سلامة التذاكر والاختبارات المخفية").set_defaults(fn=cmd_selftest)
 
     args = p.parse_args(argv)

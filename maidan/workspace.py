@@ -21,7 +21,7 @@ def _ignore(_dir: str, names: list[str]) -> set[str]:
     return {n for n in names if n in IGNORED_PARTS or n.endswith(".pyc")}
 
 
-def create(agent: str, ticket: Ticket, kind: str, model: str = "", mode: str = "") -> Path:
+def create(agent: str, ticket: Ticket, kind: str, model: str = "", mode: str = "", empty: bool = False) -> Path:
     stamp = time.strftime("%Y%m%d-%H%M%S")
     trial_id = f"{_slug(agent)}--{ticket.id}--{stamp}"
     trial_dir = TRIALS / trial_id
@@ -30,8 +30,11 @@ def create(agent: str, ticket: Ticket, kind: str, model: str = "", mode: str = "
         n += 1
         trial_dir = TRIALS / f"{trial_id}-{n}"
     ws = trial_dir / "workspace"
-    shutil.copytree(PROJECT, ws, ignore=_ignore)
-    (ws / "BRIEF.md").write_text(brief_text(ticket), encoding="utf-8")
+    if empty:
+        trial_dir.mkdir(parents=True)
+    else:
+        shutil.copytree(PROJECT, ws, ignore=_ignore)
+        (ws / "BRIEF.md").write_text(brief_text(ticket), encoding="utf-8")
     meta = {
         "trial_id": trial_dir.name,
         "agent": agent,
