@@ -26,6 +26,8 @@ class Inventory:
     def reserve(self, lines: list[tuple[str, int]]) -> None:
         """يحجز كميات طلب كامل دفعة واحدة: إما أن تُحجز كل السطور أو لا شيء."""
         for sku, qty in lines:
+            if qty <= 0:
+                raise ValueError("الكمية يجب أن تكون موجبة")
             if self.available(sku) < qty:
                 raise OutOfStock(sku, qty, self.available(sku))
         for sku, qty in lines:
